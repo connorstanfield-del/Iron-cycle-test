@@ -84,9 +84,10 @@ function seedE1RM(move, maxes) {
 function ss(n, reps, rpe) {
   return Array.from({ length: n }, () => ({ reps, rpe }));
 }
-// a top set followed by back-off sets
+// a top set, followed by back-off sets at the SAME weight (fewer reps due to fatigue —
+// fixedWeight means "use the top set's weight, don't recalculate from these reps/RPE")
 function top(reps, rpe, nBack, bReps, bRpe) {
-  return [{ reps, rpe }, ...ss(nBack, bReps, bRpe)];
+  return [{ reps, rpe }, ...ss(nBack, bReps, bRpe).map((s) => ({ ...s, fixedWeight: true }))];
 }
 
 // barbell exercise (autoregulated weight)
@@ -252,22 +253,33 @@ function rpeColor(rpe) {
 /* the rounding increment, and the RPEs already logged this session,      */
 /* compute each set's live target weight. After a set is logged, the      */
 /* e1RM is nudged toward what that set implies, so the *next* set's        */
-/* weight updates in real time.                                           */
+/* weight updates in real time. Sets flagged fixedWeight (back-off sets   */
+/* after a top set) inherit the previous set's weight instead of being    */
+/* recalculated from their own (usually lower) rep target. Each set also  */
+/* gets a ±2% display range so the lifter has a little room to round to   */
+/* whatever plates are actually on hand.                                  */
 /* ===================================================================== */
 
 const SMOOTH = 0.34; // how strongly each logged set moves the running e1RM
+const RANGE_PCT = 0.02; // ±2% working-weight range shown to the lifter
 
 function computeSetTargets(sets, baseE1RM, loggedRpes, inc) {
   let cur = baseE1RM;
+  let lastWeight = null;
   const rows = sets.map((s, i) => {
-    const target = roundWeight(cur * pctOf1RM(s.reps, s.rpe) / 100, inc);
+    const target = s.fixedWeight && lastWeight != null
+      ? lastWeight
+      : roundWeight(cur * pctOf1RM(s.reps, s.rpe) / 100, inc);
+    lastWeight = target;
+    const rangeLow = roundWeight(target * (1 - RANGE_PCT), inc);
+    const rangeHigh = roundWeight(target * (1 + RANGE_PCT), inc);
     const actual = loggedRpes[i];
     if (actual != null) {
       const implied = e1rmFromSet(target, s.reps, actual);
       const blended = cur * (1 - SMOOTH) + implied * SMOOTH;
       cur = clamp(blended, cur * 0.90, cur * 1.12);
     }
-    return { ...s, weight: target };
+    return { ...s, weight: target, rangeLow: Math.min(rangeLow, rangeHigh), rangeHigh: Math.max(rangeLow, rangeHigh) };
   });
   return { rows, finalE1RM: cur };
 }
@@ -285,17 +297,18 @@ async function safeDelete(k) { try { localStorage.removeItem(PREFIX + k); } catc
 /* UI: a single set row                                                   */
 /* ===================================================================== */
 
-function SetRow({ index, weight, reps, rpe, units, value, baseline, onSelect, iso }) {
+function SetRow({ index, weight, rangeLow, rangeHigh, reps, rpe, units, value, baseline, onSelect, iso }) {
   const moved = !iso && baseline != null && weight != null && weight !== baseline;
+  const showRange = !iso && rangeLow != null && rangeHigh != null && rangeHigh > rangeLow;
   return (
     <div className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-700/60 last:border-b-0">
-      <div className="font-mono text-xs text-slate-300 w-[104px] shrink-0">
+      <div className="font-mono text-xs text-slate-300 w-[132px] shrink-0">
         <span className="text-slate-500">{index + 1}.</span>{" "}
         {iso ? (
           <span className="text-slate-100">×{reps}</span>
         ) : (
           <>
-            <span className="text-slate-100">{weight}{units}</span>
+            <span className="text-slate-100">{showRange ? `${rangeLow}–${rangeHigh}` : weight}{units}</span>
             <span className="text-slate-500"> ×{reps}</span>
           </>
         )}
@@ -321,6 +334,32 @@ function SetRow({ index, weight, reps, rpe, units, value, baseline, onSelect, is
         })}
       </div>
     </div>
+  );
+}
+
+/* ===================================================================== */
+/* UI: sets-count field — only clamps on blur, not every keystroke,      */
+/* so typing a two-digit number doesn't get reset mid-type.              */
+/* ===================================================================== */
+
+function SetsCountInput({ value, onCommit }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => { setText(String(value)); }, [value]);
+
+  function commit() {
+    const n = clamp(parseInt(text, 10) || value, 1, 12);
+    setText(String(n));
+    onCommit(n);
+  }
+
+  return (
+    <input
+      type="number" inputMode="numeric" min="1" max="12" value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+      className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm font-mono text-slate-100 focus:ring-2 focus:ring-amber-400 focus:outline-none"
+    />
   );
 }
 
@@ -407,13 +446,12 @@ function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComple
           )}
           <div>
             <label className="text-[10px] text-slate-500 block mb-1">Number of sets</label>
-            <input type="number" min="1" max="12" value={setList.length}
-              onChange={(e) => onEditSets(slot, e.target.value)}
-              className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm font-mono text-slate-100 focus:ring-2 focus:ring-amber-400 focus:outline-none" />
+            <SetsCountInput value={setList.length} onCommit={(n) => onEditSets(slot, n)} />
           </div>
           <p className="text-[10px] text-slate-500 leading-relaxed">
             Weights are set automatically from your RPE — there's no manual weight field. Each set's load
-            recalculates from how the previous set actually felt.
+            recalculates from how the previous set actually felt, shown as a ±2% range so you can round to
+            whatever's on the bar.
           </p>
         </div>
       )}
@@ -422,7 +460,8 @@ function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComple
         <>
           <div className="mt-2">
             {rows.map((row, i) => (
-              <SetRow key={i} index={i} weight={row.weight} reps={row.reps} rpe={row.rpe} units={units}
+              <SetRow key={i} index={i} weight={row.weight} rangeLow={row.rangeLow} rangeHigh={row.rangeHigh}
+                reps={row.reps} rpe={row.rpe} units={units}
                 value={logged[i]} baseline={ex.iso ? null : baselineRows[i]?.weight} iso={ex.iso}
                 onSelect={(idx, val) => onLogRpe(slot, idx, val, setList.length)} />
             ))}
