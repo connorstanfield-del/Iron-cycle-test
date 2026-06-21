@@ -1,9 +1,22 @@
 # IronCycle
 
-A periodized powerlifting program generator. Built around block periodization
-(Volume → Strength → Peak → Deload) and **Prilepin's chart** for set/rep
-prescriptions, with **RPE-based autoregulation** and **weak-point variation**
-selection for squat, bench, deadlift, and overhead press.
+A four-day, four-week powerlifting block, woven together from three of
+[Greg Nuckols' programs](https://www.strengtheory.com) (Squat 3×/week,
+Bench 3×/week, Deadlift 2×/week), structured as a periodized progression —
+**Accumulation → Intensification → Peak → Realization**.
+
+Every working weight is **fully autoregulated by RPE**. There's no manual
+weight field anywhere: you enter your three 1RMs once, and from there each
+set's load is calculated from your current estimated max for that exact
+movement. Log how a set actually felt (RPE 6–10) and the *next* set's weight
+recalculates immediately — heavier if it felt easy, lighter if it felt hard.
+Each movement (competition lift, every variation, every loaded accessory)
+tracks its own estimated 1RM independently, so the whole program adapts to
+you set by set, session by session.
+
+You can still edit how many sets an exercise gets, and swap in a different
+movement for any variation or accessory, right from the workout screen —
+just not the weight itself.
 
 ## Run it locally
 
@@ -71,10 +84,17 @@ Then upload the contents of `dist/` to any static host (GitHub Pages via the
 
 ## Data & privacy
 
-Your maxes, current week/day, RPE logs, and autoregulation adjustments are
-stored in your browser's `localStorage` — nothing is sent to a server. Data
-is per-browser and per-device: it won't sync across devices, and clearing
-your browser's site data will reset the app.
+Your maxes, estimated 1RMs, current week/day, and session logs are stored in
+your browser's `localStorage` — nothing is sent to a server. Data is
+per-browser and per-device: it won't sync across devices, and clearing your
+browser's site data will reset the app.
+
+## Credit
+
+The four-week structure and exercise selection are adapted from Greg
+Nuckols' "Squat 3x IntAdv," "Bench 3x Adv," and "DL 2x Adv" programs
+(strengtheory.com), combined into one schedule and converted to live
+RPE-based autoregulation instead of fixed-percentage weeks.
 
 ## Tech
 
