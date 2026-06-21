@@ -100,12 +100,13 @@ function iso(move, nSets, repsText, rpe, note) {
 }
 
 /* ===================================================================== */
-/* The combined 4-day / 4-week periodized block                          */
+/* The combined 4-day / 12-week periodized block (4 phases × 3 weeks each)  */
 /* Built from: Squat 3x IntAdv, Bench 3x Adv, DL 2x Adv (Nuckols).        */
 /* Weeks: 1 Accumulation, 2 Intensification, 3 Peak, 4 Realization.       */
 /* ===================================================================== */
 
-const PHASES = ["Accumulation", "Intensification", "Peak", "Realization / Test"];
+const PHASE_NAMES = ["Accumulation", "Intensification", "Peak", "Realization / Test"];
+const WEEKS_PER_PHASE = 3;
 
 const DAY_TITLES = [
   "Squat + Bench",
@@ -114,12 +115,16 @@ const DAY_TITLES = [
   "Paused Squat + Deadlift",
 ];
 
-// program[weekIndex][dayIndex] = { exercises:[...], note }
-const PROGRAM = [
-  /* ---------------- WEEK 1 — Accumulation ---------------- */
+// PHASE_TEMPLATE[phaseIndex][dayIndex] = { exercises:[...], note }
+// Each phase's template is reused for all WEEKS_PER_PHASE weeks of that phase —
+// sets/reps/RPE targets stay identical across those weeks. Only the *weight*
+// changes week to week, driven entirely by the RPE (and any actual weight/reps
+// logged) from the same workout the previous week — see computeSetTargets.
+const PHASE_TEMPLATE = [
+  /* ---------------- PHASE 1 — Accumulation ---------------- */
   [
-    { note: "Top set then back-offs at the same effort.", exercises: [
-      bar("comp_squat", top(10, 9, 3, 8, 8), "1×10 top, then 3×8 back-off"),
+    { note: "Top set then back-offs at the same weight.", exercises: [
+      bar("comp_squat", top(10, 9, 3, 8, 8), "1×10 top, then 3×8 back-off — same weight"),
       bar("comp_bench", ss(5, 5, 7)),
       bar("cg_bench", [{ reps: 8, rpe: 8 }, { reps: 8, rpe: 8 }, { reps: 8, rpe: 9 }], "last set is AMAP-style — push to RPE 9"),
       iso("curls", 4, "10–12", 8),
@@ -143,10 +148,10 @@ const PROGRAM = [
       bar("rack_pull", ss(5, 5, 7), "bar 3–5 inches off the floor"),
     ]},
   ],
-  /* ---------------- WEEK 2 — Intensification ---------------- */
+  /* ---------------- PHASE 2 — Intensification ---------------- */
   [
     { note: "Reps drop, intensity climbs.", exercises: [
-      bar("comp_squat", top(8, 9, 3, 6, 8), "1×8 top, then 3×6 back-off"),
+      bar("comp_squat", top(8, 9, 3, 6, 8), "1×8 top, then 3×6 back-off — same weight"),
       bar("comp_bench", [...ss(4, 3, 8), ...ss(3, 6, 7)], "4×3 heavy, then 3×6 volume"),
       bar("cg_bench", [{reps:6,rpe:8},{reps:6,rpe:8},{reps:6,rpe:9}]),
       iso("curls", 4, "10–12", 8),
@@ -170,10 +175,10 @@ const PROGRAM = [
       bar("rack_pull", ss(4, 3, 8)),
     ]},
   ],
-  /* ---------------- WEEK 3 — Peak ---------------- */
+  /* ---------------- PHASE 3 — Peak ---------------- */
   [
     { note: "Heaviest week. Sharp top sets.", exercises: [
-      bar("comp_squat", top(5, 9, 3, 3, 8), "1×5 top, then 3×3 back-off"),
+      bar("comp_squat", top(5, 9, 3, 3, 8), "1×5 top, then 3×3 back-off — same weight"),
       bar("comp_bench", [...ss(4, 3, 8.5), ...ss(3, 8, 7)], "4×3 heavy, then 3×8 volume"),
       bar("cg_bench", [{reps:4,rpe:8},{reps:4,rpe:8},{reps:4,rpe:9}]),
       iso("curls", 4, "10–12", 8),
@@ -197,7 +202,7 @@ const PROGRAM = [
       bar("rack_pull", ss(3, 2, 8.5)),
     ]},
   ],
-  /* ---------------- WEEK 4 — Realization / Test ---------------- */
+  /* ---------------- PHASE 4 — Realization / Test ---------------- */
   [
     { note: "Open with a heavy triple, then a touch of volume.", exercises: [
       bar("comp_squat", [...ss(1, 3, 9), ...ss(3, 3, 7)], "1×3 @ RPE 9 sets your new max, then 3×3 light"),
@@ -225,6 +230,18 @@ const PROGRAM = [
   ],
 ];
 
+// Expand into the full 12-week schedule. Each phase's template is reused for
+// WEEKS_PER_PHASE consecutive weeks (it's read-only, so sharing the reference
+// across weeks is safe) — only the live e1RM/weight differs week to week.
+const PROGRAM = [];
+const PHASES = [];
+PHASE_TEMPLATE.forEach((template, phaseIdx) => {
+  for (let w = 0; w < WEEKS_PER_PHASE; w++) {
+    PROGRAM.push(template);
+    PHASES.push(PHASE_NAMES[phaseIdx]);
+  }
+});
+
 const N_WEEKS = PROGRAM.length;
 const N_DAYS = DAY_TITLES.length;
 const RPE_OPTIONS = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
@@ -250,20 +267,29 @@ function rpeColor(rpe) {
 /* ===================================================================== */
 /* Autoregulation engine                                                  */
 /* Given a barbell exercise, the lifter's current e1RM for that movement, */
-/* the rounding increment, and the RPEs already logged this session,      */
-/* compute each set's live target weight. After a set is logged, the      */
-/* e1RM is nudged toward what that set implies, so the *next* set's        */
-/* weight updates in real time. Sets flagged fixedWeight (back-off sets   */
-/* after a top set) inherit the previous set's weight instead of being    */
-/* recalculated from their own (usually lower) rep target. Each set also  */
-/* gets a ±2% display range so the lifter has a little room to round to   */
-/* whatever plates are actually on hand.                                  */
+/* the rounding increment, and the sets already logged this session,      */
+/* compute each set's live target weight. `loggedEntries[i]` is either    */
+/* undefined (not logged yet) or { rpe, weight, reps } — weight/reps are  */
+/* what the lifter says they *actually* did; if left blank they default   */
+/* to the prescribed target. That actual performance (not just the       */
+/* assumed target) is what updates the running e1RM, so the *next* set,   */
+/* and the *next week's* same workout, both follow from what really      */
+/* happened. Sets flagged fixedWeight (back-off sets after a top set)     */
+/* inherit the previous set's weight instead of recalculating from their */
+/* own (usually lower) rep target. Each set also gets a ±2% display range */
+/* so the lifter has room to round to whatever plates are on hand.        */
 /* ===================================================================== */
 
 const SMOOTH = 0.34; // how strongly each logged set moves the running e1RM
 const RANGE_PCT = 0.02; // ±2% working-weight range shown to the lifter
 
-function computeSetTargets(sets, baseE1RM, loggedRpes, inc) {
+function numOrNull(v) {
+  if (v == null || v === "") return null;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function computeSetTargets(sets, baseE1RM, loggedEntries, inc) {
   let cur = baseE1RM;
   let lastWeight = null;
   const rows = sets.map((s, i) => {
@@ -273,9 +299,11 @@ function computeSetTargets(sets, baseE1RM, loggedRpes, inc) {
     lastWeight = target;
     const rangeLow = roundWeight(target * (1 - RANGE_PCT), inc);
     const rangeHigh = roundWeight(target * (1 + RANGE_PCT), inc);
-    const actual = loggedRpes[i];
-    if (actual != null) {
-      const implied = e1rmFromSet(target, s.reps, actual);
+    const entry = loggedEntries ? loggedEntries[i] : null;
+    if (entry && entry.rpe != null) {
+      const actualWeight = numOrNull(entry.weight) ?? target;
+      const actualReps = numOrNull(entry.reps) ?? s.reps;
+      const implied = e1rmFromSet(actualWeight, actualReps, entry.rpe);
       const blended = cur * (1 - SMOOTH) + implied * SMOOTH;
       cur = clamp(blended, cur * 0.90, cur * 1.12);
     }
@@ -297,33 +325,52 @@ async function safeDelete(k) { try { localStorage.removeItem(PREFIX + k); } catc
 /* UI: a single set row                                                   */
 /* ===================================================================== */
 
-function SetRow({ index, weight, rangeLow, rangeHigh, reps, rpe, units, value, baseline, onSelect, iso }) {
-  const moved = !iso && baseline != null && weight != null && weight !== baseline;
+function SetRow({ index, target, rangeLow, rangeHigh, targetReps, targetRpe, units, entry, onField, iso, baseline }) {
+  const rpeValue = entry ? entry.rpe : null;
+  const moved = !iso && baseline != null && target != null && target !== baseline;
   const showRange = !iso && rangeLow != null && rangeHigh != null && rangeHigh > rangeLow;
+
   return (
-    <div className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-700/60 last:border-b-0">
-      <div className="font-mono text-xs text-slate-300 w-[132px] shrink-0">
-        <span className="text-slate-500">{index + 1}.</span>{" "}
-        {iso ? (
-          <span className="text-slate-100">×{reps}</span>
-        ) : (
+    <div className="py-2 border-b border-slate-700/60 last:border-b-0">
+      <div className="flex items-center justify-between font-mono text-[10px] text-slate-500 mb-1">
+        <span>
+          <span className="text-slate-400">{index + 1}.</span> target{" "}
+          {iso ? `×${targetReps}` : `${showRange ? `${rangeLow}–${rangeHigh}` : target}${units} ×${targetReps}`}
+          {moved && (
+            target > baseline
+              ? <ArrowUp className="inline w-3 h-3 ml-0.5 text-emerald-400 -mt-0.5" />
+              : <ArrowDown className="inline w-3 h-3 ml-0.5 text-rose-400 -mt-0.5" />
+          )}
+        </span>
+        <span>@RPE{targetRpe}</span>
+      </div>
+
+      <div className="flex items-center gap-1.5 mb-1.5">
+        {!iso && (
           <>
-            <span className="text-slate-100">{showRange ? `${rangeLow}–${rangeHigh}` : weight}{units}</span>
-            <span className="text-slate-500"> ×{reps}</span>
+            <input
+              type="number" inputMode="decimal" placeholder={String(target)} value={entry?.weight ?? ""}
+              onChange={(e) => onField(index, "weight", e.target.value)}
+              aria-label={`Actual weight for set ${index + 1}`}
+              className="w-16 bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs font-mono text-slate-100 placeholder-slate-600 focus:ring-2 focus:ring-amber-400 focus:outline-none"
+            />
+            <span className="text-[10px] text-slate-500 shrink-0">{units} ×</span>
           </>
         )}
-        {moved && (
-          weight > baseline
-            ? <ArrowUp className="inline w-3 h-3 ml-0.5 text-emerald-400 -mt-0.5" />
-            : <ArrowDown className="inline w-3 h-3 ml-0.5 text-rose-400 -mt-0.5" />
-        )}
-        <span className="text-slate-600"> · @{rpe}</span>
+        <input
+          type="number" inputMode="numeric" placeholder={String(targetReps)} value={entry?.reps ?? ""}
+          onChange={(e) => onField(index, "reps", e.target.value)}
+          aria-label={`Actual reps for set ${index + 1}`}
+          className="w-12 bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs font-mono text-slate-100 placeholder-slate-600 focus:ring-2 focus:ring-amber-400 focus:outline-none"
+        />
+        <span className="text-[10px] text-slate-500">reps done</span>
       </div>
-      <div className="flex flex-wrap gap-1 justify-end">
+
+      <div className="flex flex-wrap gap-1">
         {RPE_OPTIONS.map((r) => {
-          const active = value === r;
+          const active = rpeValue === r;
           return (
-            <button key={r} type="button" onClick={() => onSelect(index, r)}
+            <button key={r} type="button" onClick={() => onField(index, "rpe", r)}
               className="plate-btn w-8 h-8 rounded-full text-[10px] font-mono font-semibold border focus:ring-2 focus:ring-amber-400 focus:outline-none"
               style={active
                 ? { backgroundColor: rpeColor(r), borderColor: rpeColor(r), color: "#1C2127" }
@@ -367,11 +414,11 @@ function SetsCountInput({ value, onCommit }) {
 /* UI: one exercise card                                                   */
 /* ===================================================================== */
 
-function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComplete, onSwap, onEditSets }) {
+function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onField, onComplete, onSwap, onEditSets }) {
   const [editing, setEditing] = useState(false);
   const slot = `ex${exIndex}`;
   const complete = !!draft.completed[slot];
-  const logged = draft.entries[slot] || [];
+  const logged = draft.entries[slot] || []; // array of { weight, reps, rpe } | undefined
   const move = MOVE[ex.move];
   const swappedName = draft.swaps[slot];
   const displayName = swappedName || move.name;
@@ -394,7 +441,7 @@ function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComple
     }
   }
 
-  // live weight targets
+  // live weight targets — driven by actual recorded weight/reps/RPE where logged
   let rows, baselineRows;
   if (ex.iso) {
     rows = setList.map((s) => ({ ...s, weight: null }));
@@ -405,9 +452,10 @@ function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComple
     baselineRows = computeSetTargets(setList, base, [], inc).rows; // pre-session targets
   }
 
-  const loggedCount = logged.filter((v) => v != null).length;
+  const loggedEntries = logged.filter((v) => v && v.rpe != null);
+  const loggedCount = loggedEntries.length;
   const ready = loggedCount === setList.length && setList.length > 0;
-  const avg = loggedCount ? +(logged.filter((v) => v != null).reduce((a, b) => a + b, 0) / loggedCount).toFixed(2) : null;
+  const avg = loggedCount ? +(loggedEntries.reduce((a, b) => a + b.rpe, 0) / loggedCount).toFixed(2) : null;
 
   const kindLabel = move.iso ? "Accessory"
     : move.kind === "main" ? "Main Lift"
@@ -449,9 +497,9 @@ function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComple
             <SetsCountInput value={setList.length} onCommit={(n) => onEditSets(slot, n)} />
           </div>
           <p className="text-[10px] text-slate-500 leading-relaxed">
-            Weights are set automatically from your RPE — there's no manual weight field. Each set's load
-            recalculates from how the previous set actually felt, shown as a ±2% range so you can round to
-            whatever's on the bar.
+            Each set's suggested weight is shown as a ±2% range — that's a starting point, not a requirement.
+            Log what you actually lifted (weight, reps, RPE) and the next set, and next week's same workout,
+            both follow from that.
           </p>
         </div>
       )}
@@ -460,17 +508,17 @@ function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComple
         <>
           <div className="mt-2">
             {rows.map((row, i) => (
-              <SetRow key={i} index={i} weight={row.weight} rangeLow={row.rangeLow} rangeHigh={row.rangeHigh}
-                reps={row.reps} rpe={row.rpe} units={units}
-                value={logged[i]} baseline={ex.iso ? null : baselineRows[i]?.weight} iso={ex.iso}
-                onSelect={(idx, val) => onLogRpe(slot, idx, val, setList.length)} />
+              <SetRow key={i} index={i} target={row.weight} rangeLow={row.rangeLow} rangeHigh={row.rangeHigh}
+                targetReps={row.reps} targetRpe={row.rpe} units={units}
+                entry={logged[i]} baseline={ex.iso ? null : baselineRows[i]?.weight} iso={ex.iso}
+                onField={(idx, field, val) => onField(slot, idx, field, val)} />
             ))}
           </div>
           <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-700/60">
             <div className="text-[11px] text-slate-400">
               {ex.iso ? "Pick a weight that hits the target RPE · " : ""}Logged {loggedCount}/{setList.length}
             </div>
-            <button type="button" disabled={!ready} onClick={() => onComplete(slot, ex, rows, setList)}
+            <button type="button" disabled={!ready} onClick={() => onComplete(slot, ex, setList)}
               className={`flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-lg ${ready ? "bg-amber-500 text-slate-900 hover:bg-amber-400" : "bg-slate-700 text-slate-500 cursor-not-allowed"}`}>
               <Check className="w-3.5 h-3.5" /> Save
             </button>
@@ -478,7 +526,13 @@ function ExerciseCard({ ex, exIndex, draft, e1rm, units, inc, onLogRpe, onComple
         </>
       ) : (
         <div className="flex items-center justify-between mt-2 text-xs">
-          <span className="text-slate-400">{setList.length} sets logged</span>
+          <span className="text-slate-400">
+            {setList.length} sets
+            {!ex.iso && (() => {
+              const top = rows.reduce((mx, r, i) => Math.max(mx, numOrNull(logged[i]?.weight) ?? r.weight), 0);
+              return top ? ` · top ${top}${units}` : "";
+            })()}
+          </span>
           <span className="font-mono" style={{ color: rpeColor(avg) }}>Avg RPE {avg}</span>
         </div>
       )}
@@ -497,8 +551,8 @@ function TodayView({ config, e1rm, weekIdx, dayIdx, draft, handlers, blockComple
         <Dumbbell className="w-10 h-10 text-amber-500 mx-auto mb-3" />
         <div className="font-display text-2xl text-slate-50 mb-2">Block Complete</div>
         <p className="text-sm text-slate-400 max-w-sm mx-auto mb-5">
-          Four weeks done. Your estimated maxes have been climbing with every set — start the next block and they
-          carry straight over as your new starting point.
+          Twelve weeks done. Your estimated maxes have been climbing with every set you logged — start the next
+          block and they carry straight over as your new starting point.
         </p>
         <button type="button" onClick={onNewBlock} className="bg-amber-500 text-slate-900 px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-amber-400">
           Start Next Block
@@ -510,23 +564,31 @@ function TodayView({ config, e1rm, weekIdx, dayIdx, draft, handlers, blockComple
   const day = PROGRAM[weekIdx][dayIdx];
   const exercises = day.exercises;
   const doneCount = exercises.filter((_, i) => draft.completed[`ex${i}`]).length;
+  const weekInPhase = (weekIdx % WEEKS_PER_PHASE) + 1;
 
   return (
     <div>
       <div className="mb-4">
-        <div className="flex gap-1 mb-3">
-          {Array.from({ length: N_WEEKS * N_DAYS }).map((_, idx) => {
-            const w = Math.floor(idx / N_DAYS), d = idx % N_DAYS;
-            const past = w < weekIdx || (w === weekIdx && d < dayIdx);
-            const here = w === weekIdx && d === dayIdx;
-            return <div key={idx} className="h-1.5 flex-1 rounded-full"
-              style={{ backgroundColor: past ? "#C68B3D" : here ? "#C0533E" : "#3A4250" }} />;
-          })}
+        <div className="flex gap-2 mb-3">
+          {PHASE_NAMES.map((name, phaseIdx) => (
+            <div key={phaseIdx} className="flex-1 flex gap-0.5" title={name}>
+              {Array.from({ length: WEEKS_PER_PHASE * N_DAYS }).map((_, idx) => {
+                const w = phaseIdx * WEEKS_PER_PHASE + Math.floor(idx / N_DAYS);
+                const d = idx % N_DAYS;
+                const past = w < weekIdx || (w === weekIdx && d < dayIdx);
+                const here = w === weekIdx && d === dayIdx;
+                return <div key={idx} className="h-1.5 flex-1 rounded-full"
+                  style={{ backgroundColor: past ? "#C68B3D" : here ? "#C0533E" : "#3A4250" }} />;
+              })}
+            </div>
+          ))}
         </div>
         <div className="flex items-center justify-between">
           <div>
             <div className="font-display text-xl text-slate-50">Day {dayIdx + 1} · {DAY_TITLES[dayIdx]}</div>
-            <div className="text-xs text-slate-400">Week {weekIdx + 1} of {N_WEEKS} · {PHASES[weekIdx]} phase</div>
+            <div className="text-xs text-slate-400">
+              Week {weekIdx + 1} of {N_WEEKS} · {PHASES[weekIdx]} (week {weekInPhase} of {WEEKS_PER_PHASE})
+            </div>
           </div>
           <div className="flex gap-1">
             {Array.from({ length: N_DAYS }).map((_, i) => (
@@ -541,7 +603,7 @@ function TodayView({ config, e1rm, weekIdx, dayIdx, draft, handlers, blockComple
 
       {exercises.map((ex, i) => (
         <ExerciseCard key={i} ex={ex} exIndex={i} draft={draft} e1rm={e1rm} units={config.units} inc={config.rounding}
-          onLogRpe={handlers.onLogRpe} onComplete={handlers.onComplete} onSwap={handlers.onSwap} onEditSets={handlers.onEditSets} />
+          onField={handlers.onSetField} onComplete={handlers.onComplete} onSwap={handlers.onSwap} onEditSets={handlers.onEditSets} />
       ))}
 
       <div className="mt-2 flex items-center justify-between bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-3">
@@ -560,27 +622,38 @@ function BlockView({ onJump }) {
       <div className="mb-4">
         <div className="font-display text-xl text-slate-50 mb-1">The Block</div>
         <p className="text-xs text-slate-400">
-          Four weeks, four days each — squat, bench and deadlift programs combined. Reps and target RPE are
-          fixed by the plan; weights come from your RPE as you lift. Tap any day to jump to it.
+          Twelve weeks, four days each, in four 3-week phases — squat, bench and deadlift programs combined.
+          Reps and RPE targets stay identical across a phase's 3 weeks; only the weight changes, carried forward
+          from how the same workout went the week before. Tap a week or a day to jump to it.
         </p>
       </div>
       <div className="space-y-3">
-        {PROGRAM.map((week, wi) => (
-          <div key={wi} className="rounded-xl border border-slate-700 bg-slate-800/50 overflow-hidden">
-            <div className="px-3 py-2 flex items-center justify-between" style={{ borderLeft: "4px solid #C68B3D" }}>
-              <div className="font-mono text-xs text-slate-200">Week {wi + 1}</div>
-              <div className="font-mono text-[11px] text-amber-400">{PHASES[wi]}</div>
+        {PHASE_TEMPLATE.map((template, phaseIdx) => (
+          <div key={phaseIdx} className="rounded-xl border border-slate-700 bg-slate-800/50 overflow-hidden">
+            <div className="px-3 py-2 flex items-center justify-between flex-wrap gap-2" style={{ borderLeft: "4px solid #C68B3D" }}>
+              <div className="font-mono text-xs text-slate-200">{PHASE_NAMES[phaseIdx]}</div>
+              <div className="flex gap-1">
+                {Array.from({ length: WEEKS_PER_PHASE }).map((_, w) => {
+                  const absWeek = phaseIdx * WEEKS_PER_PHASE + w;
+                  return (
+                    <button key={w} type="button" onClick={() => onJump(absWeek, 0)}
+                      className="font-mono text-[11px] px-2 py-0.5 rounded bg-slate-700 text-amber-300 hover:bg-slate-600">
+                      Wk {absWeek + 1}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-px bg-slate-700/50">
-              {week.map((day, di) => (
-                <button key={di} type="button" onClick={() => onJump(wi, di)}
+              {template.map((day, di) => (
+                <button key={di} type="button" onClick={() => onJump(phaseIdx * WEEKS_PER_PHASE, di)}
                   className="bg-slate-800 hover:bg-slate-700/70 text-left p-2.5">
                   <div className="text-[10px] font-mono text-slate-500 mb-1">Day {di + 1} · {DAY_TITLES[di]}</div>
                   {day.exercises.map((ex, i) => {
                     const m = MOVE[ex.move];
                     const setsTxt = ex.iso
                       ? `${ex.nSets}×${ex.repsText} @${ex.rpe}`
-                      : `${ex.sets.length}×${ex.sets.map((s) => s.reps).join("/")} @${ex.sets.map((s)=>s.rpe).join("/")}`;
+                      : `${ex.sets.length}×${ex.sets.map((s) => s.reps).join("/")} @${ex.sets.map((s) => s.rpe).join("/")}`;
                     return (
                       <div key={i} className="text-[11px] text-slate-300 leading-snug">
                         <span className="text-slate-100">{m.name}</span>{" "}
@@ -676,13 +749,15 @@ function SetupForm({ form, setForm, onSubmit, hasExisting, onReset }) {
       {!hasExisting && (
         <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 mb-5 text-sm text-slate-300 space-y-2">
           <p>
-            A four-day, four-week periodized block built from three of Greg Nuckols' programs —
-            <span className="text-slate-100"> Squat 3×/week, Bench 3×/week, Deadlift 2×/week</span> — woven together.
+            A four-day, twelve-week periodized block built from three of Greg Nuckols' programs —
+            <span className="text-slate-100"> Squat 3×/week, Bench 3×/week, Deadlift 2×/week</span> — woven together
+            into four 3-week phases: Accumulation, Intensification, Peak, and Realization.
           </p>
           <p>
-            Enter your current 1RMs to seed it. From there, <span className="text-slate-100">every working weight is set by
-            RPE</span>: rate each set 6–10 and the next set's load recalculates instantly from how hard the last one was.
-            There's no manual weight field — the bar follows your readiness.
+            Enter your current 1RMs to seed it. Sets and reps stay the same across a phase's 3 weeks — only the
+            weight changes, and it's driven entirely by what you log: rate each set's RPE, and optionally record
+            the actual weight and reps if they differed from the suggestion. That feeds the next set, and the
+            same workout next week, in real time.
           </p>
         </div>
       )}
@@ -798,10 +873,10 @@ export default function App() {
 
   function showToast(m) { setToast(m); setTimeout(() => setToast(null), 2600); }
 
-  function onLogRpe(slot, idx, rpe, nSets) {
+  function onSetField(slot, idx, field, val) {
     setDraft((prev) => {
       const arr = prev.entries[slot] ? [...prev.entries[slot]] : [];
-      arr[idx] = rpe;
+      arr[idx] = { ...(arr[idx] || {}), [field]: val };
       return { ...prev, entries: { ...prev.entries, [slot]: arr } };
     });
   }
@@ -815,18 +890,22 @@ export default function App() {
     setDraft((prev) => ({ ...prev, setCounts: { ...prev.setCounts, [slot]: n } }));
   }
 
-  function onComplete(slot, ex, rows, setList) {
-    const logged = (draft.entries[slot] || []).slice(0, setList.length).filter((v) => v != null);
-    if (logged.length < setList.length) return;
-    const avg = +(logged.reduce((a, b) => a + b, 0) / logged.length).toFixed(2);
+  function onComplete(slot, ex, setList) {
+    const logged = (draft.entries[slot] || []).slice(0, setList.length);
+    if (logged.length < setList.length || logged.some((e) => !e || e.rpe == null)) return;
+    const avg = +(logged.reduce((a, b) => a + b.rpe, 0) / logged.length).toFixed(2);
     const move = MOVE[ex.move];
 
     let finalE1RM = null, topWeight = null;
     if (!ex.iso) {
       const base = e1rm[ex.move];
-      const res = computeSetTargets(setList, base, draft.entries[slot], config.rounding);
+      const res = computeSetTargets(setList, base, logged, config.rounding);
       finalE1RM = res.finalE1RM;
-      topWeight = res.rows.reduce((mx, r) => Math.max(mx, r.weight), 0);
+      // prefer what was actually recorded for the heaviest set; fall back to the suggested target
+      topWeight = res.rows.reduce((mx, r, i) => {
+        const actual = numOrNull(logged[i]?.weight);
+        return Math.max(mx, actual ?? r.weight);
+      }, 0);
       setE1rm((prev) => ({ ...prev, [ex.move]: finalE1RM }));
     }
 
@@ -914,7 +993,7 @@ export default function App() {
     return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-400 text-sm">Loading…</div>;
   }
 
-  const handlers = { onLogRpe, onComplete, onSwap, onEditSets, onFinishDay };
+  const handlers = { onSetField, onComplete, onSwap, onEditSets, onFinishDay };
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100">

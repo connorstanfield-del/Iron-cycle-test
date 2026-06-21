@@ -1,22 +1,24 @@
 # IronCycle
 
-A four-day, four-week powerlifting block, woven together from three of
+A four-day, twelve-week powerlifting block, woven together from three of
 [Greg Nuckols' programs](https://www.strengtheory.com) (Squat 3×/week,
-Bench 3×/week, Deadlift 2×/week), structured as a periodized progression —
-**Accumulation → Intensification → Peak → Realization**.
+Bench 3×/week, Deadlift 2×/week), structured as four 3-week periodized
+phases — **Accumulation → Intensification → Peak → Realization**. Sets and
+reps stay identical across a phase's 3 weeks; only the weight changes, week
+to week, driven by how the same workout actually went the time before.
 
-Every working weight is **fully autoregulated by RPE**. There's no manual
-weight field anywhere: you enter your three 1RMs once, and from there each
-set's load is calculated from your current estimated max for that exact
-movement. Log how a set actually felt (RPE 6–10) and the *next* set's weight
-recalculates immediately — heavier if it felt easy, lighter if it felt hard.
-Each movement (competition lift, every variation, every loaded accessory)
-tracks its own estimated 1RM independently, so the whole program adapts to
-you set by set, session by session.
+Every working weight is **autoregulated by RPE**, shown as a ±2% range so
+there's room to round to whatever's on the bar. Rate each set 6–10 and the
+*next* set's weight recalculates immediately — heavier if it felt easy,
+lighter if it felt hard. You can also record what you **actually** lifted
+(weight and reps, if they differed from the suggestion) — that real
+performance, not just the assumed target, is what drives the next set and
+the next week's same workout. Each movement (competition lift, every
+variation, every loaded accessory) tracks its own estimated 1RM
+independently, seeded from the three 1RMs you enter once at setup.
 
-You can still edit how many sets an exercise gets, and swap in a different
-movement for any variation or accessory, right from the workout screen —
-just not the weight itself.
+You can also edit how many sets an exercise gets, and swap in a different
+movement for any variation or accessory, right from the workout screen.
 
 ## Run it locally
 
@@ -91,7 +93,7 @@ browser's site data will reset the app.
 
 ## Credit
 
-The four-week structure and exercise selection are adapted from Greg
+The twelve-week, four-phase structure and exercise selection are adapted from Greg
 Nuckols' "Squat 3x IntAdv," "Bench 3x Adv," and "DL 2x Adv" programs
 (strengtheory.com), combined into one schedule and converted to live
 RPE-based autoregulation instead of fixed-percentage weeks.
